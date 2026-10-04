@@ -1,0 +1,17 @@
+{
+  "name": "@wolter/node",
+  "version": "0.1.0",
+  "description": "Node.js runtime metrics plugin for Wolter (CPU, heap, event loop lag)",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@wolter/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.5.0"
+  }
+}

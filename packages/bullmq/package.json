@@ -1,0 +1,20 @@
+{
+  "name": "@wolter/bullmq",
+  "version": "0.1.0",
+  "description": "BullMQ job-monitoring plugin for Wolter",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@wolter/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "bullmq": "^5.0.0"
+  },
+  "devDependencies": {
+    "bullmq": "^5.12.0",
+    "typescript": "^5.5.0"
+  }
+}

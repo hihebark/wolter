@@ -1,0 +1,28 @@
+{
+  "name": "@wolter/core",
+  "version": "0.1.0",
+  "description": "Core module, HTTP/exception watchers, dashboard, plugin interface for Wolter",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && cp src/dashboard/dashboard-logic.js src/dashboard/dashboard-logic.test.js dist/dashboard/",
+    "test": "npm run build && node --test dist"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "tdigest": "^0.1.2"
+  },
+  "peerDependencies": {
+    "@nestjs/common": "^10.0.0 || ^11.0.0",
+    "@nestjs/core": "^10.0.0 || ^11.0.0",
+    "rxjs": "^7.0.0"
+  },
+  "devDependencies": {
+    "@nestjs/common": "^10.4.0",
+    "@nestjs/core": "^10.4.0",
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^20.0.0",
+    "rxjs": "^7.8.1",
+    "typescript": "^5.5.0"
+  }
+}

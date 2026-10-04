@@ -1,0 +1,7 @@
+packages:
+  - "packages/*"
+  - "examples/*"
+onlyBuiltDependencies:
+  - "@nestjs/core"
+  - better-sqlite3
+  - msgpackr-extract
