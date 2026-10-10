@@ -5,6 +5,17 @@ import { Recorder } from '../recorder';
 import { TraceContext } from '../trace-context';
 import { redactFields, redactHeaders, truncateBody } from './redact';
 
+// Keeps the "<Name>: <message>" header plus the first `frames` lines after
+// it. Counting from the end of the message, not the top of the stack, keeps a
+// long multi-line message from pushing every real frame out — the throw site
+// (see normalize-query.ts's throwSite) is read from those frames.
+function truncateStack(stack: string, message: string, frames = 20): string {
+  const messageAt = message ? stack.indexOf(message) : -1;
+  if (messageAt === -1) return stack.split('\n').slice(0, frames).join('\n');
+  const headerEnd = messageAt + message.length;
+  return stack.slice(0, headerEnd) + stack.slice(headerEnd).split('\n').slice(0, frames + 1).join('\n');
+}
+
 @Injectable()
 export class WolterHttpInterceptor implements NestInterceptor {
   // Matched as a path *segment*, not just a prefix: a global prefix
@@ -20,11 +31,23 @@ export class WolterHttpInterceptor implements NestInterceptor {
     private readonly slowThreshold: number,
     ignorePathPrefix?: string,
     private readonly capture?: { headers?: boolean; body?: boolean; ignoreHeaders?: string[]; ignoreBodyFields?: string[] },
+    // Per-route overrides of slowThreshold, keyed "METHOD /route/:template"
+    // (one method) or "/route/:template" (any method) — the matched route
+    // template, so the key is the same for every request to that endpoint.
+    private readonly routeThresholds: Record<string, number> = {},
   ) {
     if (ignorePathPrefix) {
       const segment = ignorePathPrefix.replace(/^\//, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       this.ignorePathRegex = new RegExp(`(^|/)${segment}(/|$)`);
     }
+  }
+
+  private thresholdFor(method: string, routePath: string | undefined): number {
+    if (routePath) {
+      const exact = this.routeThresholds[`${method} ${routePath}`] ?? this.routeThresholds[routePath];
+      if (exact !== undefined) return exact;
+    }
+    return this.slowThreshold;
   }
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
@@ -70,7 +93,7 @@ export class WolterHttpInterceptor implements NestInterceptor {
           category: 'http',
           label: req.route?.path ? `${req.method} ${req.route.path}` : `${req.method} (unmatched)`,
           duration,
-          status: status === 'error' ? 'error' : duration > this.slowThreshold ? 'slow' : 'ok',
+          status: status === 'error' ? 'error' : duration > this.thresholdFor(req.method, req.route?.path) ? 'slow' : 'ok',
           statusCode,
           traceId,
           // Only matched routes get a backend-owned route identity — an
@@ -102,7 +125,7 @@ export class WolterHttpInterceptor implements NestInterceptor {
               path: req.url,
               method: req.method,
               message: err instanceof Error ? err.message : String(err),
-              stack: err instanceof Error && err.stack ? err.stack.split('\n').slice(0, 20).join('\n') : undefined,
+              stack: err instanceof Error && err.stack ? truncateStack(err.stack, err.message) : undefined,
             },
             timestamp: Date.now(),
           });

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { of } from 'rxjs';
+import { lastValueFrom, of } from 'rxjs';
+import { delay } from 'rxjs/operators';
 import { ExecutionContext, CallHandler } from '@nestjs/common';
 import { WolterHttpInterceptor } from './http.interceptor';
 import { Recorder } from '../recorder';
@@ -77,4 +78,43 @@ test('an unmatched route (no req.route) gets no route identity', () => {
   interceptor.intercept(context, handler).subscribe();
 
   assert.deepEqual(recorded, [{ routeMethod: undefined, routePath: undefined }]);
+});
+
+// Per-route thresholds: the matched route template picks its own threshold,
+// falling back to the global default.
+function contextForRoute(method: string, routePath: string): ExecutionContext {
+  return {
+    getType: () => 'http',
+    switchToHttp: () => ({
+      getRequest: () => ({ method, url: routePath, route: { path: routePath } }),
+      getResponse: () => ({ statusCode: 200 }),
+    }),
+  } as unknown as ExecutionContext;
+}
+
+async function statusOf(interceptor: WolterHttpInterceptor, method: string, routePath: string): Promise<string | undefined> {
+  const slowHandler: CallHandler = { handle: () => of('ok').pipe(delay(5)) };
+  let status: string | undefined;
+  const recorder = { record: (e: { category: string; status: string }) => { if (e.category === 'http') status = e.status; } } as unknown as Recorder;
+  (interceptor as unknown as { recorder: Recorder }).recorder = recorder;
+  await lastValueFrom(interceptor.intercept(contextForRoute(method, routePath), slowHandler));
+  return status;
+}
+
+test('a route threshold keyed "METHOD /path" applies only to that method', async () => {
+  const interceptor = new WolterHttpInterceptor({} as Recorder, 10_000, undefined, undefined, { 'GET /reports/:id': 1 });
+  assert.equal(await statusOf(interceptor, 'GET', '/reports/:id'), 'slow');
+  assert.equal(await statusOf(interceptor, 'POST', '/reports/:id'), 'ok'); // falls back to the 10s default
+});
+
+test('a route threshold keyed "/path" applies to every method; other routes keep the default', async () => {
+  const interceptor = new WolterHttpInterceptor({} as Recorder, 10_000, undefined, undefined, { '/reports/:id': 1 });
+  assert.equal(await statusOf(interceptor, 'POST', '/reports/:id'), 'slow');
+  assert.equal(await statusOf(interceptor, 'GET', '/users/:id'), 'ok');
+});
+
+test('a method-specific threshold wins over a path-wide one', async () => {
+  const interceptor = new WolterHttpInterceptor({} as Recorder, 1, undefined, undefined, { '/reports/:id': 1, 'GET /reports/:id': 10_000 });
+  assert.equal(await statusOf(interceptor, 'GET', '/reports/:id'), 'ok');
+  assert.equal(await statusOf(interceptor, 'DELETE', '/reports/:id'), 'slow');
 });
