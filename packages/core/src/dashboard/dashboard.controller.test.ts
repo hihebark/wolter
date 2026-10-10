@@ -5,6 +5,11 @@ import { GUARDS_METADATA, PATH_METADATA } from '@nestjs/common/constants';
 import { createDashboardController } from './dashboard.controller';
 import { AggregatedBucket, RawEvent, RetentionInfo, WolterStorageDriver } from '../interfaces/storage.interface';
 import { PluginRegistry, PluginStatus } from '../plugin-registry';
+import { SqliteStorage } from '../storage/sqlite.storage';
+import { Aggregator, LabelOverflow } from '../aggregation/aggregator';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 class TestGuard implements CanActivate {
   canActivate(): boolean {
@@ -47,13 +52,17 @@ class FakeStorage implements WolterStorageDriver {
   pruneEvents(): void {}
 }
 
-function makeController(storage: WolterStorageDriver, pluginRegistry?: PluginRegistry) {
+function makeController(storage: WolterStorageDriver, pluginRegistry?: PluginRegistry, aggregator?: Aggregator) {
   const Controller = createDashboardController('wolter', ['http']);
-  return new (Controller as unknown as new (s: WolterStorageDriver, p: PluginRegistry) => {
+  return new (Controller as unknown as new (s: WolterStorageDriver, p: PluginRegistry, a: Aggregator) => {
     metrics(category: string, range?: string, search?: string): unknown;
     events(category: string, label: string, range?: string): unknown;
-    health(): Promise<{ plugins: PluginStatus[] }>;
-  })(storage, pluginRegistry ?? ({ status: () => [] } as unknown as PluginRegistry));
+    health(): Promise<{ plugins: PluginStatus[]; sqliteInProduction: boolean; labelOverflow: LabelOverflow[] }>;
+  })(
+    storage,
+    pluginRegistry ?? ({ status: () => [] } as unknown as PluginRegistry),
+    aggregator ?? ({ overflowStatus: () => [] } as unknown as Aggregator),
+  );
 }
 
 test('metrics() delegates to storage.query() with the given category', () => {
@@ -95,6 +104,36 @@ test('health() includes plugin registration status from the plugin registry', as
   const controller = makeController(storage, pluginRegistry);
   const health = await controller.health();
   assert.deepEqual(health.plugins, status);
+});
+
+test('events() accepts the log category (raw-captured for trace correlation)', () => {
+  const storage = new FakeStorage();
+  const controller = makeController(storage);
+  controller.events('log', 'Fetching user', '1h');
+  assert.deepEqual(storage.queriedEvents, [{ category: 'log', label: 'Fetching user', range: '1h', limit: 50 }]);
+});
+
+// Regression: the flag used to be just NODE_ENV === 'production', so it warned
+// about SQLite even when a custom driver — the documented fix — was in use.
+test('health() only flags sqliteInProduction when the storage really is SqliteStorage', async () => {
+  const previous = process.env.NODE_ENV;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wolter-health-'));
+  const sqlite = new SqliteStorage(path.join(dir, 'wolter.db'));
+  process.env.NODE_ENV = 'production';
+  try {
+    assert.equal((await makeController(new FakeStorage()).health()).sqliteInProduction, false);
+    assert.equal((await makeController(sqlite).health()).sqliteInProduction, true);
+  } finally {
+    process.env.NODE_ENV = previous;
+    sqlite.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('health() reports categories that hit the label cap', async () => {
+  const overflow: LabelOverflow[] = [{ category: 'job', folded: 42, lastAt: 1 }];
+  const controller = makeController(new FakeStorage(), undefined, { overflowStatus: () => overflow } as unknown as Aggregator);
+  assert.deepEqual((await controller.health()).labelOverflow, overflow);
 });
 
 test('mounts at the configured path', () => {
