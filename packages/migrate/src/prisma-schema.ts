@@ -1,8 +1,15 @@
-import { ColumnType, TableDef, WOLTER_TABLES, indexName, tableName, validatePrefix } from './schema';
+import { ColumnType, TableDef, WOLTER_TABLES, indexName, tableName, uniqueName, validatePrefix } from './schema';
 
 const PRISMA_TYPE: Record<ColumnType, string> = { text: 'String', int: 'Int', bigint: 'BigInt', real: 'Float' };
 
-const MODEL_NAME: Record<string, string> = { metrics: 'WolterMetric', events: 'WolterEvent' };
+const MODEL_NAME: Record<string, string> = {
+  routes: 'WolterRoute',
+  labels: 'WolterLabel',
+  metrics: 'WolterMetric',
+  events: 'WolterEvent',
+  issues: 'WolterIssue',
+  issue_comments: 'WolterIssueComment',
+};
 
 function camelCase(name: string): string {
   return name.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
@@ -19,6 +26,9 @@ function renderModel(table: TableDef, prefix: string): string {
   }
   if (table.primaryKey) {
     lines.push(`\n  @@id([${table.primaryKey.map(camelCase).join(', ')}])`);
+  }
+  if (table.unique) {
+    lines.push(`\n  @@unique([${table.unique.map(camelCase).join(', ')}], map: "${uniqueName(table, prefix)}")`);
   }
   for (const idx of table.indexes) {
     lines.push(`  @@index([${idx.columns.map(camelCase).join(', ')}], name: "${indexName(table, prefix, idx)}")`);

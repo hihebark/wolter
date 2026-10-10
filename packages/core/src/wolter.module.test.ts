@@ -42,3 +42,57 @@ test('forRoot({ enabled: false }) never engages the guard at all', () => {
   assert.doesNotThrow(() => WolterModule.forRoot({ dashboard: { enabled: false } }));
   WolterModule.release();
 });
+
+// Never touched — forRoot() only builds a module descriptor (see top of file).
+const fakeStorage = {} as WolterStorageDriver;
+
+class TestGuard {
+  canActivate(): boolean {
+    return true;
+  }
+}
+
+// Runs fn with NODE_ENV set to `value` (undefined = unset), restoring it after.
+function withNodeEnv(value: string | undefined, fn: () => void): void {
+  const previous = process.env.NODE_ENV;
+  if (value === undefined) delete process.env.NODE_ENV;
+  else process.env.NODE_ENV = value;
+  try {
+    fn();
+  } finally {
+    if (previous === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previous;
+    WolterModule.release();
+  }
+}
+
+// Regression: the guard used to be required only when NODE_ENV === 'production'
+// exactly, so an unset or differently-spelled NODE_ENV served every captured
+// request to anonymous clients.
+for (const env of [undefined, 'production', 'prod', 'Production', 'staging']) {
+  test(`forRoot() refuses an unguarded dashboard when NODE_ENV is ${env === undefined ? 'unset' : `'${env}'`}`, () => {
+    withNodeEnv(env, () => {
+      assert.throws(() => WolterModule.forRoot({ storage: { driver: 'custom', instance: fakeStorage } }), /Dashboard guard is required/);
+    });
+  });
+}
+
+for (const env of ['development', 'test']) {
+  test(`forRoot() allows an unguarded dashboard when NODE_ENV is '${env}'`, () => {
+    withNodeEnv(env, () => {
+      assert.doesNotThrow(() => WolterModule.forRoot({ storage: { driver: 'custom', instance: fakeStorage } }));
+    });
+  });
+}
+
+test('forRoot() accepts an unguarded dashboard outside development/test only with an explicit opt-in, a guard, or the dashboard off', () => {
+  withNodeEnv(undefined, () => {
+    assert.doesNotThrow(() => WolterModule.forRoot({ storage: { driver: 'custom', instance: fakeStorage }, dashboard: { allowUnauthenticated: true } }));
+  });
+  withNodeEnv('production', () => {
+    assert.doesNotThrow(() => WolterModule.forRoot({ storage: { driver: 'custom', instance: fakeStorage }, dashboard: { guard: TestGuard } }));
+  });
+  withNodeEnv('production', () => {
+    assert.doesNotThrow(() => WolterModule.forRoot({ storage: { driver: 'custom', instance: fakeStorage }, dashboard: { enabled: false } }));
+  });
+});

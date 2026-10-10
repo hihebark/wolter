@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { CachePlugin } from './cache.plugin';
+import { CachePlugin, defaultKeyLabel } from './cache.plugin';
 
 // Mirrors how real cache-manager/Keyv implementations commonly hold state —
 // a private field only accessible with `this` bound to the real instance,
@@ -39,7 +39,38 @@ test('wrap() still records a hit/miss on get()', async () => {
   await wrapped.get('user:123');
   await wrapped.get('user:missing');
   assert.deepEqual(events, [
-    { label: 'user:*', status: 'ok' },
-    { label: 'user:*', status: 'error' },
+    { label: 'user', status: 'ok' },
+    { label: 'user', status: 'error' },
   ]);
+});
+
+// Regression for unbounded label cardinality: keys built from request data
+// (URL + query string, tokens) used to become one label per distinct value.
+test('defaultKeyLabel groups a key by its namespace, never by request-derived parts', () => {
+  assert.equal(defaultKeyLabel('user:123:profile'), 'user');
+  assert.equal(defaultKeyLabel('user:banana:profile'), 'user');
+  assert.equal(defaultKeyLabel('/products/42?q=shoe'), '/products');
+  assert.equal(defaultKeyLabel('/products/banana#x'), '/products');
+  assert.equal(defaultKeyLabel('/'), '/');
+  assert.equal(defaultKeyLabel('session_a1b2c3'), 'session');
+  assert.equal(defaultKeyLabel('cache.v2.users'), 'cache');
+  assert.equal(defaultKeyLabel('a1b2c3'), '(unprefixed)');
+  assert.equal(defaultKeyLabel(':x'), '(unprefixed)');
+});
+
+test('keyLabel overrides the default grouping, and a throwing keyLabel never reaches the caller', async () => {
+  const labels: string[] = [];
+  const recorder = { record: (e: { label: string }) => labels.push(e.label) } as never;
+
+  const custom = new CachePlugin({ keyLabel: (key) => key.split(':').slice(0, 2).join(':') });
+  custom.register(recorder);
+  const wrapped = custom.wrap(new PrivateFieldCache());
+  await wrapped.get('tenant:acme:user:1');
+  assert.deepEqual(labels, ['tenant:acme']);
+
+  const broken = new CachePlugin({ keyLabel: () => { throw new Error('boom'); } });
+  broken.register(recorder);
+  const wrappedBroken = broken.wrap(new PrivateFieldCache());
+  await wrappedBroken.set('k', 1);
+  assert.equal(await wrappedBroken.get('k'), 1);
 });

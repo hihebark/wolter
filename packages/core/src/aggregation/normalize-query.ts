@@ -23,29 +23,60 @@ export function normalizeQuery(sql: string): string {
     .replace(/\b\d+(\.\d+)?\b/g, '?');
 }
 
-// Same idea as normalizeQuery, for free-text exception messages instead of
-// SQL — without this, "User 123 not found" and "User 456 not found" group as
-// two separate issues instead of one, even though they're the same bug.
-// ponytail: same regex-over-real-parser tradeoff as normalizeQuery.
-export function normalizeMessage(message: string): string {
-  return cap(message)
-    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '?') // uuid
-    .replace(/'[^']*'|"[^"]*"/g, '?') // quoted strings
-    .replace(/\b\d+(\.\d+)?\b/g, '?'); // numbers
+// One V8 stack frame: "at fn (file:line:col)" or "at file:line:col".
+const FRAME = /^\s+at (?:(.+?) \()?(.+?):\d+:\d+\)?$/;
+
+// Where an exception was thrown: the first stack frame in the app's own code
+// (dependencies and Node internals skipped), as "fn (file)" — no line/column,
+// so small edits above the throw don't split one bug into a new group.
+// Returns undefined when no such frame exists (no stack, or a stack made only
+// of library frames).
+//
+// The stack starts with "<Name>: <message>", and the message is
+// request-controlled — it can contain lines that look like frames. Parsing
+// only starts after the message, so an attacker can't forge the throw site.
+export function throwSite(stack: string, message: string): string | undefined {
+  const messageAt = message ? stack.indexOf(message) : 0;
+  // Message not found (e.g. the stack was cut inside a long message): can't
+  // tell its lines from real frames, so don't guess.
+  if (messageAt === -1) return undefined;
+  const frames = stack.slice(messageAt + message.length).split('\n');
+  for (const line of frames) {
+    const match = FRAME.exec(line);
+    if (!match) continue;
+    const file = match[2].replace(/^file:\/\//, '');
+    if (file.includes('node_modules') || file.startsWith('node:') || file.startsWith('internal/') || file === '<anonymous>') continue;
+    const cwd = process.cwd() + '/';
+    const relative = file.startsWith(cwd) ? file.slice(cwd.length) : file;
+    const fn = (match[1] ?? '<anonymous>').replace(/^async /, '');
+    return `${fn} (${relative})`;
+  }
+  return undefined;
 }
 
 // The grouping key shared by Aggregator and EventLog — raw events must be
 // keyed identically to aggregate buckets, or "recent occurrences for this
 // label" (looked up from the aggregate's label) would never match anything.
-// Exceptions fold their (normalized) message into the label alongside the
-// class name — grouping by class name alone merges genuinely different bugs
-// that just happen to throw the same exception type (e.g. two different
-// NotFoundException call sites) into one noisy, meaningless bucket.
+//
+// Exceptions group by class + throw site, never by message: the message often
+// carries request data ("No product named <whatever the client sent>"), so
+// grouping by it would let any client create unlimited groups. Throw sites are
+// bounded by the app's own code. The message itself stays on each raw event
+// (meta.message), so the dashboard still shows it per occurrence. With no
+// usable stack, the class name alone is the group.
+//
+// Every other category's label is set by its emitter (route template,
+// normalized SQL, cache key namespace, ...) and only length-capped here;
+// Aggregator's per-window label cap is the backstop for any that misbehave.
+// 'log' is raw on purpose — it's the log line shown in the trace waterfall,
+// and Aggregator never aggregates it.
 export function normalizeLabel(event: { category: string; label: string; meta?: Record<string, unknown> }): string {
   if (event.category === 'query') return normalizeQuery(event.label);
   if (event.category === 'exception') {
+    const stack = typeof event.meta?.stack === 'string' ? event.meta.stack : '';
     const message = typeof event.meta?.message === 'string' ? event.meta.message : '';
-    return message ? cap(`${event.label}: ${normalizeMessage(message)}`) : cap(event.label);
+    const site = stack ? throwSite(stack, message) : undefined;
+    return cap(site ? `${event.label} at ${site}` : event.label);
   }
   return cap(event.label);
 }

@@ -24,7 +24,7 @@ test('defaults to wolter_-prefixed table names', () => {
   const storage = new SqliteStorage(dbPath);
   storage.close();
 
-  assert.deepEqual(userTableNames(dbPath), ['wolter_events', 'wolter_labels', 'wolter_metrics', 'wolter_routes']);
+  assert.deepEqual(userTableNames(dbPath), ['wolter_events', 'wolter_issue_comments', 'wolter_issues', 'wolter_labels', 'wolter_metrics', 'wolter_routes']);
 });
 
 test('uses a custom table prefix, so Wolter tables can coexist in the host appâ€™s own database', () => {
@@ -32,7 +32,7 @@ test('uses a custom table prefix, so Wolter tables can coexist in the host appâ€
   const storage = new SqliteStorage(dbPath, 'myapp_wolter_');
   storage.close();
 
-  assert.deepEqual(userTableNames(dbPath), ['myapp_wolter_events', 'myapp_wolter_labels', 'myapp_wolter_metrics', 'myapp_wolter_routes']);
+  assert.deepEqual(userTableNames(dbPath), ['myapp_wolter_events', 'myapp_wolter_issue_comments', 'myapp_wolter_issues', 'myapp_wolter_labels', 'myapp_wolter_metrics', 'myapp_wolter_routes']);
 });
 
 test('rejects a table prefix that is not a safe SQL identifier', () => {
@@ -128,5 +128,103 @@ test('prune sweeps routes/labels no longer referenced by any metric bucket, but 
   assert.notEqual(storage.resolveLabel('query', 'DELETE FROM gone'), orphanLabelId);
   assert.equal(storage.resolveRoute('GET', '/kept'), keptRouteId);
   assert.equal(storage.resolveLabel('query', 'SELECT kept'), keptLabelId);
+  storage.close();
+});
+
+function bucket(category: string, label: string, window: number, count = 1) {
+  return {
+    category, label, window, count, errorCount: 0, slowCount: 0, normalCount: 0, clientErrorCount: 0, serverErrorCount: 0,
+    totalDuration: 0, min: 0, max: 0, p50: 0, p95: 0, p99: 0, timestamp: window,
+  };
+}
+
+test('writeBatch() upserts every bucket in one call, same result as write()', () => {
+  const storage = new SqliteStorage(tmpDbPath());
+  storage.writeBatch([bucket('http', 'GET /a', 0, 1), bucket('http', 'GET /b', 0, 2)]);
+  storage.writeBatch([bucket('http', 'GET /a', 0, 5)]); // upsert, not duplicate
+  const rows = storage.query('http', 'custom:-1:1');
+  assert.deepEqual(rows.map((r) => [r.label, r.count]).sort(), [['GET /a', 5], ['GET /b', 2]]);
+  storage.close();
+});
+
+test('writeBatch() is all or nothing: a failing bucket rolls back the whole batch', () => {
+  const storage = new SqliteStorage(tmpDbPath());
+  const bad = { ...bucket('http', 'GET /bad', 0), count: null as unknown as number }; // violates NOT NULL
+  assert.throws(() => storage.writeBatch([bucket('http', 'GET /ok', 0), bad]));
+  assert.equal(storage.query('http', 'custom:-1:1').length, 0);
+  storage.close();
+});
+
+// Regression for unbounded label cardinality: metrics used to be pruned by age
+// only, so storage size tracked how many distinct labels traffic produced.
+test('prune(olderThan, maxRowsPerCategory) keeps only the newest N buckets per category', () => {
+  const dbPath = tmpDbPath();
+  const storage = new SqliteStorage(dbPath);
+  for (let w = 1; w <= 10; w++) {
+    storage.write({ ...bucket('exception', `E${w}`, w * 60_000), labelId: storage.resolveLabel('exception', `E${w}`) });
+  }
+  storage.write(bucket('http', 'GET /keep', 60_000));
+
+  storage.prune(0, 3);
+
+  const exceptions = storage.query('exception', `custom:0:${11 * 60_000}`).map((r) => r.label);
+  assert.deepEqual(exceptions, ['E8', 'E9', 'E10']); // newest kept
+  assert.equal(storage.query('http', `custom:0:${11 * 60_000}`).length, 1); // other categories untouched
+  storage.close();
+  // Labels whose last bucket was trimmed are swept in the same pass.
+  const db = new Database(dbPath);
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM wolter_labels WHERE category = 'exception'").get() as { n: number }).n, 3);
+  db.close();
+});
+
+test('prune(olderThan) without a size cap still prunes by age only', () => {
+  const storage = new SqliteStorage(tmpDbPath());
+  storage.writeBatch([bucket('http', 'GET /old', 1_000), bucket('http', 'GET /new', 120_000)]);
+  storage.prune(60_000);
+  assert.deepEqual(storage.query('http', 'custom:0:200000').map((r) => r.label), ['GET /new']);
+  storage.close();
+});
+
+function rawEvent(category: string, label: string, timestamp: number, statusCode?: number) {
+  return { category, label, status: 'ok', statusCode, duration: 1, meta: {}, timestamp };
+}
+
+function seeded(): SqliteStorage {
+  const storage = new SqliteStorage(tmpDbPath());
+  storage.write({ ...bucket('http', 'GET /a', 60_000), labelId: storage.resolveLabel('http', 'GET /a') });
+  storage.write(bucket('http', 'GET /a', 120_000));
+  storage.write(bucket('http', 'GET /b', 60_000));
+  storage.write(bucket('exception', 'TypeError', 60_000));
+  storage.writeEvent(rawEvent('http', 'GET /a', 60_000, 500));
+  storage.writeEvent(rawEvent('http', 'GET /a', 61_000, 200));
+  storage.writeEvent(rawEvent('http', 'GET /b', 62_000, 500));
+  storage.issues.touch('TypeError', 60_000);
+  return storage;
+}
+
+test('clearData(dryRun) counts matches without deleting; the real run deletes exactly those', () => {
+  const storage = seeded();
+  const filter = { tables: ['metrics', 'events'] as Array<'metrics' | 'events'>, category: 'http', label: 'GET /a' };
+  assert.deepEqual(storage.clearData(filter, true), { metrics: 2, events: 2 });
+  assert.deepEqual(storage.clearData(filter, true), { metrics: 2, events: 2 }); // nothing deleted yet
+  assert.deepEqual(storage.clearData(filter, false), { metrics: 2, events: 2 });
+  assert.deepEqual(storage.query('http', 'custom:0:999999').map((r) => r.label), ['GET /b']);
+  assert.equal(storage.issues.list().length, 1); // issues are never cleared
+  storage.close();
+});
+
+test('clearData filters by time range [since, until) and by table', () => {
+  const storage = seeded();
+  assert.deepEqual(storage.clearData({ tables: ['metrics'], since: 60_000, until: 120_000 }, false), { metrics: 3, events: 0 });
+  assert.deepEqual(storage.query('http', 'custom:0:999999').map((r) => r.window), [120_000]);
+  assert.equal(storage.queryEvents('http', 'GET /a', 'custom:0:999999', 50).length, 2);
+  storage.close();
+});
+
+test('a status-code filter applies to raw events only and never matches metric buckets', () => {
+  const storage = seeded();
+  assert.deepEqual(storage.clearData({ tables: ['metrics', 'events'], statusCode: 500 }, false), { metrics: 0, events: 2 });
+  assert.equal(storage.query('http', 'custom:0:999999').length, 3);
+  assert.deepEqual(storage.queryEvents('http', 'GET /a', 'custom:0:999999', 50).map((e) => e.statusCode), [200]);
   storage.close();
 });

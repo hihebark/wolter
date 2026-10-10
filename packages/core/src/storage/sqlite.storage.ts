@@ -1,7 +1,8 @@
 import Database from 'better-sqlite3';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { AggregatedBucket, RawEvent, RetentionInfo, WolterStorageDriver } from '../interfaces/storage.interface';
+import { AggregatedBucket, ClearFilter, ClearResult, RawEvent, RetentionInfo, WolterStorageDriver } from '../interfaces/storage.interface';
+import { SqliteIssueStore } from './sqlite-issues';
 
 const RANGE_MS: Record<string, number> = {
   '1h': 60 * 60_000,
@@ -40,6 +41,7 @@ export class SqliteStorage implements WolterStorageDriver {
   private readonly eventsTable: string;
   private readonly routesTable: string;
   private readonly labelsTable: string;
+  readonly issues: SqliteIssueStore;
 
   // tablePrefix lets Wolter's tables coexist in a database the host app
   // already owns (its own migrations, its own naming) without colliding —
@@ -129,12 +131,28 @@ export class SqliteStorage implements WolterStorageDriver {
       CREATE INDEX IF NOT EXISTS idx_${this.eventsTable}_category_label_ts ON ${this.eventsTable}(category, label, timestamp);
       CREATE INDEX IF NOT EXISTS idx_${this.eventsTable}_trace_id ON ${this.eventsTable}(trace_id);
     `);
+    this.issues = new SqliteIssueStore(this.db, `${tablePrefix}issues`, `${tablePrefix}issue_comments`);
   }
 
   write(bucket: AggregatedBucket): void {
-    this.db
-      .prepare(
-        `INSERT INTO ${this.metricsTable} (category, label, window, count, error_count, slow_count, normal_count, client_error_count, server_error_count, total_duration, min, max, p50, p95, p99, timestamp, route_id, label_id)
+    this.upsertMetric().run({ ...bucket, routeId: bucket.routeId ?? null, labelId: bucket.labelId ?? null });
+  }
+
+  // One transaction per flush instead of one implicit transaction (and WAL
+  // commit) per bucket. better-sqlite3 transactions are all-or-nothing: on a
+  // throw nothing is written and the aggregator retries the whole batch.
+  writeBatch(buckets: AggregatedBucket[]): void {
+    const stmt = this.upsertMetric();
+    this.db.transaction(() => {
+      for (const bucket of buckets) stmt.run({ ...bucket, routeId: bucket.routeId ?? null, labelId: bucket.labelId ?? null });
+    })();
+  }
+
+  // Prepared once and reused — write()/writeBatch() run on every flush.
+  private upsertStmt?: Database.Statement;
+  private upsertMetric(): Database.Statement {
+    return (this.upsertStmt ??= this.db.prepare(
+      `INSERT INTO ${this.metricsTable} (category, label, window, count, error_count, slow_count, normal_count, client_error_count, server_error_count, total_duration, min, max, p50, p95, p99, timestamp, route_id, label_id)
          VALUES (@category, @label, @window, @count, @errorCount, @slowCount, @normalCount, @clientErrorCount, @serverErrorCount, @totalDuration, @min, @max, @p50, @p95, @p99, @timestamp, @routeId, @labelId)
          ON CONFLICT(category, label, window) DO UPDATE SET
            count=excluded.count, error_count=excluded.error_count, slow_count=excluded.slow_count,
@@ -142,8 +160,7 @@ export class SqliteStorage implements WolterStorageDriver {
            total_duration=excluded.total_duration,
            min=excluded.min, max=excluded.max, p50=excluded.p50, p95=excluded.p95, p99=excluded.p99,
            route_id=excluded.route_id, label_id=excluded.label_id`,
-      )
-      .run({ ...bucket, routeId: bucket.routeId ?? null, labelId: bucket.labelId ?? null });
+    ));
   }
 
   // Get-or-create by the (method, path) unique index — a route row is only ever
@@ -209,13 +226,64 @@ export class SqliteStorage implements WolterStorageDriver {
     }));
   }
 
-  prune(olderThan: number): void {
-    this.db.prepare(`DELETE FROM ${this.metricsTable} WHERE timestamp < ?`).run(olderThan);
-    // Sweep routes/labels that no metric bucket references anymore — run after the
-    // metrics delete above so a route/label whose last bucket just aged out is
-    // caught in the same pass, not one prune cycle later.
+  prune(olderThan: number, maxRowsPerCategory?: number): void {
+    this.db.transaction(() => {
+      this.db.prepare(`DELETE FROM ${this.metricsTable} WHERE timestamp < ?`).run(olderThan);
+      // Size cap, per category so a flood of one category's labels can't evict
+      // another category's history. Newest windows are kept; served by
+      // idx_<metrics>_category_ts.
+      if (maxRowsPerCategory !== undefined) {
+        const categories = this.db.prepare(`SELECT DISTINCT category FROM ${this.metricsTable}`).all() as Array<{ category: string }>;
+        const trim = this.db.prepare(
+          `DELETE FROM ${this.metricsTable} WHERE rowid IN (
+             SELECT rowid FROM ${this.metricsTable} WHERE category = ? ORDER BY timestamp DESC LIMIT -1 OFFSET ?
+           )`,
+        );
+        for (const { category } of categories) trim.run(category, maxRowsPerCategory);
+      }
+      // Run after the metrics deletes above so a route/label whose last bucket
+      // just went is caught in the same pass, not one prune cycle later.
+      this.sweepOrphans();
+    })();
+  }
+
+  // Routes/labels that no metric bucket references anymore.
+  private sweepOrphans(): void {
     this.db.prepare(`DELETE FROM ${this.routesTable} WHERE id NOT IN (SELECT route_id FROM ${this.metricsTable} WHERE route_id IS NOT NULL)`).run();
     this.db.prepare(`DELETE FROM ${this.labelsTable} WHERE id NOT IN (SELECT label_id FROM ${this.metricsTable} WHERE label_id IS NOT NULL)`).run();
+  }
+
+  clearData(filter: ClearFilter, dryRun: boolean): ClearResult {
+    // Column names are fixed literals here; every filter value is bound.
+    const where = (statusCode: boolean) => {
+      const clauses: string[] = [];
+      const params: unknown[] = [];
+      if (filter.category !== undefined) { clauses.push('category = ?'); params.push(filter.category); }
+      if (filter.label !== undefined) { clauses.push('label = ?'); params.push(filter.label); }
+      if (filter.since !== undefined) { clauses.push('timestamp >= ?'); params.push(filter.since); }
+      if (filter.until !== undefined) { clauses.push('timestamp < ?'); params.push(filter.until); }
+      if (statusCode && filter.statusCode !== undefined) { clauses.push('status_code = ?'); params.push(filter.statusCode); }
+      return { sql: clauses.length ? ' WHERE ' + clauses.join(' AND ') : '', params };
+    };
+    // A status-code filter can't apply to metric buckets, so it excludes them
+    // rather than silently matching every bucket.
+    const doMetrics = filter.tables.includes('metrics') && filter.statusCode === undefined;
+    const doEvents = filter.tables.includes('events');
+    return this.db.transaction(() => {
+      const result: ClearResult = { metrics: 0, events: 0 };
+      for (const [table, key, enabled, withStatus] of [
+        [this.metricsTable, 'metrics', doMetrics, false],
+        [this.eventsTable, 'events', doEvents, true],
+      ] as const) {
+        if (!enabled) continue;
+        const w = where(withStatus);
+        result[key] = dryRun
+          ? (this.db.prepare(`SELECT COUNT(*) AS n FROM ${table}${w.sql}`).get(...w.params) as { n: number }).n
+          : this.db.prepare(`DELETE FROM ${table}${w.sql}`).run(...w.params).changes;
+      }
+      if (!dryRun && doMetrics) this.sweepOrphans();
+      return result;
+    })();
   }
 
   health(): boolean {

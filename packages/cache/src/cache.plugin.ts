@@ -7,9 +7,29 @@ interface CacheLike {
   get(key: string): Promise<unknown>;
 }
 
-function normalizeKey(key: string): string {
-  // user:123 -> user:*, session:abc-def -> session:*
-  return key.replace(/:[^:]+$/, ':*');
+export interface CachePluginOptions {
+  /** Maps a cache key to the label it's grouped under on the dashboard. Defaults to
+   *  defaultKeyLabel (the key's namespace). Supply one for finer groups — e.g. keep a
+   *  second segment — but never return parts of the key that come from request data,
+   *  or every distinct value becomes its own group. */
+  keyLabel?: (key: string) => string;
+}
+
+// Groups a key by its namespace — the part the app's code chose, before any
+// value that may come from the request. Only the app knows its key format, so
+// the default is deliberately coarse; keyLabel can refine it.
+//   'user:123:profile'     -> 'user'
+//   '/products/42?q=shoe'  -> '/products'   (URL-style keys, e.g. CacheInterceptor's)
+//   'session_a1b2c3'       -> 'session'
+//   'a1b2c3'               -> '(unprefixed)' (no namespace: the whole key may be a request value)
+export function defaultKeyLabel(key: string): string {
+  const path = key.split(/[?#]/)[0];
+  let namespace: string;
+  if (path.includes(':')) namespace = path.slice(0, path.indexOf(':'));
+  else if (path.startsWith('/')) namespace = '/' + path.slice(1).split('/')[0];
+  else if (/[_.-]/.test(path)) namespace = path.slice(0, path.search(/[_.-]/));
+  else namespace = '';
+  return namespace || '(unprefixed)';
 }
 
 export class CachePlugin implements WolterPlugin {
@@ -17,6 +37,8 @@ export class CachePlugin implements WolterPlugin {
   category: WolterPlugin['category'] = 'cache';
 
   private recorder?: Recorder;
+
+  constructor(private readonly options: CachePluginOptions = {}) {}
 
   register(recorder: Recorder): void {
     this.recorder = recorder;
@@ -52,10 +74,12 @@ export class CachePlugin implements WolterPlugin {
   private emit(key: string, status: 'ok' | 'error'): void {
     if (!this.recorder) return;
     try {
+      // Inside the try: a throwing keyLabel must not reach the host's cache call.
+      const label = (this.options.keyLabel ?? defaultKeyLabel)(key);
       this.recorder.record({
         plugin: this.name,
         category: 'cache',
-        label: normalizeKey(key),
+        label,
         status,
         timestamp: Date.now(),
       });

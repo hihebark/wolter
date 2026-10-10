@@ -26,7 +26,8 @@ README's "Explicitly out of scope" section; this document does not revisit those
   (the "zero-impact guarantee" enforced throughout the codebase's own try/catch discipline).
 - Zero external infrastructure dependency for v0.1 — no separate DB server, no message
   queue, no agent process to deploy/monitor.
-- Safe defaults in production (dashboard guard required, SQLite-in-production surfaced
+- Safe defaults (dashboard guard required unless NODE_ENV is explicitly development/test
+  or the host opts out with `dashboard.allowUnauthenticated`; SQLite-in-production surfaced
   as a loud warning rather than silently accepted).
 
 ## Current architecture

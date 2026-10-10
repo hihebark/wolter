@@ -1,1 +1,1 @@
-export { CachePlugin } from './cache.plugin';
+export { CachePlugin, CachePluginOptions, defaultKeyLabel } from './cache.plugin';

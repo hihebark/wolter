@@ -18,6 +18,15 @@ test('camelCases snake_case column names while keeping the @map to the real colu
   assert.match(schema, /traceId\s+String\?\s+@map\("trace_id"\)/);
 });
 
+test('renders route/label lookup models with their unique get-or-create key', () => {
+  const schema = renderPrismaSchema('wolter_');
+  assert.match(schema, /model WolterRoute \{/);
+  assert.match(schema, /model WolterLabel \{/);
+  assert.match(schema, /@@unique\(\[method, path\], map: "uq_wolter_routes"\)/);
+  assert.match(schema, /@@unique\(\[category, label\], map: "uq_wolter_labels"\)/);
+  assert.match(schema, /routeId\s+BigInt\?\s+@map\("route_id"\)/);
+});
+
 test('rejects an unsafe table prefix', () => {
   assert.throws(() => renderPrismaSchema('wolter;drop'), /must match/);
 });

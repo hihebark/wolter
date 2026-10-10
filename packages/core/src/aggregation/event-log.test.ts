@@ -112,3 +112,18 @@ test('prune sweeps only the raw-event categories', () => {
   assert.deepEqual(categories, ['exception', 'http', 'log', 'query']);
   assert.ok(storage.pruned.every((p) => p.keepCount === 250));
 });
+
+// Regression: prune() runs from setInterval, outside Recorder's try/catch, so
+// a throwing pruneEvents() used to be an uncaught exception in the host app.
+test('prune() swallows a throwing pruneEvents() and still sweeps the remaining categories', () => {
+  const storage = new FakeStorage();
+  const pruneEvents = storage.pruneEvents.bind(storage);
+  storage.pruneEvents = (category, olderThan, keepCount) => {
+    if (category === 'http') throw new Error('SQLITE_BUSY');
+    pruneEvents(category, olderThan, keepCount);
+  };
+  const eventLog = new EventLog(storage);
+
+  assert.doesNotThrow(() => (eventLog as unknown as { prune(): void }).prune());
+  assert.deepEqual(storage.pruned.map((p) => p.category).sort(), ['exception', 'log', 'query']);
+});

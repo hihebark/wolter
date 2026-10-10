@@ -390,6 +390,29 @@ export function renderDashboardHtml(activeCategories: string[] = ['http', 'excep
     border: 1px solid var(--border); background: none; color: var(--text-secondary);
   }
   .occ-copy-btn:hover { color: var(--text); border-color: var(--text-muted); }
+  /* Issue triage (exception detail page) and Data page forms. */
+  .issue-st-open { color: var(--critical); font-weight: 600; }
+  .issue-st-resolved { color: var(--good); font-weight: 600; }
+  .issue-st-ignored { color: var(--text-muted); }
+  .toolbar-right { display: flex; align-items: center; gap: 12px; }
+  .form-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin-bottom: 12px; }
+  .form-field { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: var(--text-secondary); }
+  .form-field select, .form-field input, .form-field textarea {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text);
+    padding: 6px 8px; font-size: 12.5px; font-family: inherit; min-width: 140px;
+  }
+  .form-field textarea { min-height: 70px; resize: vertical; width: min(560px, 100%); }
+  .form-field select:focus, .form-field input:focus, .form-field textarea:focus { outline: none; border-color: var(--accent); }
+  .btn { font-family: inherit; font-size: 12px; padding: 6px 12px; border-radius: 6px; cursor: pointer; border: 1px solid var(--border); background: none; color: var(--text-secondary); }
+  .btn:hover { color: var(--text); border-color: var(--text-muted); }
+  .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .btn.danger { background: var(--critical); color: #fff; border-color: var(--critical); }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .form-msg { font-size: 12px; color: var(--text-secondary); min-height: 16px; }
+  .form-msg.bad { color: var(--critical); }
+  .comment { border-top: 1px solid var(--row-border); padding: 10px 0; font-size: 12.5px; }
+  .comment-meta { color: var(--text-muted); font-size: 11.5px; margin-bottom: 4px; }
+  .comment-body { white-space: pre-wrap; word-break: break-word; }
   .trace-dup-badge { color: var(--warn); font-weight: 700; font-size: 11px; }
   .badge-method-chip {
     display: inline-block; font-size: 12px; font-weight: 700; letter-spacing: 0.03em;
@@ -491,6 +514,10 @@ export function renderDashboardHtml(activeCategories: string[] = ['http', 'excep
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
         Cache
       </a>` : ''}
+      <a class="nav-item" data-page="data">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>
+        Data
+      </a>
     </nav>
     <button class="nav-item sidebar-toggle" id="sidebar-toggle" data-tooltip="Collapse sidebar" aria-label="Collapse sidebar">
       <svg id="sidebar-toggle-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 17l-5-5 5-5M18 17l-5-5 5-5"/></svg>
@@ -559,6 +586,10 @@ export function renderDashboardHtml(activeCategories: string[] = ['http', 'excep
     <div id="prod-sqlite-warning" class="prod-warning" style="display:none">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
       Wolter is running with its SQLite storage driver in production (NODE_ENV=production). SQLite is single-file, single-instance — fine for one dev/staging replica, but consider whether that fits a production deployment.
+    </div>
+    <div id="label-overflow-warning" class="prod-warning" style="display:none">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      <span id="label-overflow-text"></span>
     </div>
 
     <section id="page-dashboard" class="page active">
@@ -701,10 +732,18 @@ export function renderDashboardHtml(activeCategories: string[] = ['http', 'excep
       </div>
       <div class="table-toolbar">
         <h3 id="exc-count">0 exception types</h3>
+        <div class="toolbar-right">
+        <div class="range-pills" id="exc-status-filter" style="display:none">
+          <button type="button" class="active" data-status="open">Open</button>
+          <button type="button" data-status="resolved">Resolved</button>
+          <button type="button" data-status="ignored">Ignored</button>
+          <button type="button" data-status="all">All</button>
+        </div>
         <div class="search-box" data-search-key="exceptions">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
           <input id="exc-search" placeholder="Search exceptions">
           <button type="button" class="search-clear" aria-label="Clear search"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+        </div>
         </div>
       </div>
       <div class="table-card"><div id="exceptions-table"></div></div>
@@ -718,7 +757,7 @@ export function renderDashboardHtml(activeCategories: string[] = ['http', 'excep
             <span class="dc-title">Jobs</span>
             <span class="dc-stat"><span class="n" id="jobs-total">0</span><span class="u">total</span></span>
             <span class="dc-stat normal"><span class="legend-dot" style="background:var(--text-muted)"></span><span class="n" id="jobs-ok">0</span><span class="u">completed</span></span>
-            <span class="dc-stat warn"><span class="legend-dot" style="background:var(--warn)"></span><span class="n" id="jobs-stalled">0</span><span class="u">stalled</span></span>
+            <span class="dc-stat warn"><span class="legend-dot" style="background:var(--warn)"></span><span class="n" id="jobs-stalled">0</span><span class="u">slow / stalled</span></span>
             <span class="dc-stat critical"><span class="legend-dot" style="background:var(--critical)"></span><span class="n" id="jobs-failed">0</span><span class="u">failed</span></span>
           </div>
           <svg class="chart-svg" id="jobs-status-chart" width="100%" height="140"></svg>
@@ -761,6 +800,37 @@ export function renderDashboardHtml(activeCategories: string[] = ['http', 'excep
       <div class="pagination" id="cache-pagination"></div>
     </section>` : ''}
 
+    <section id="page-data" class="page">
+      <div class="detail-card">
+        <div class="dc-head"><span class="dc-title">Clear stored data</span></div>
+        <p class="form-msg" style="margin: 0 0 14px">Delete metrics or raw events matching every filter below. Preview first — deleting can't be undone. Issues and their comments are never deleted here.</p>
+        <div class="form-row">
+          <label class="form-field">Data
+            <span><label><input type="checkbox" id="clear-metrics" checked> Metrics</label> &nbsp; <label><input type="checkbox" id="clear-events" checked> Raw events</label></span>
+          </label>
+          <label class="form-field">Category
+            <select id="clear-category">
+              <option value="">All</option><option value="http">Requests</option><option value="query">Queries</option><option value="exception">Exceptions</option>
+              <option value="job">Jobs</option><option value="cache">Cache</option><option value="runtime">Runtime</option><option value="log">Logs</option>
+            </select>
+          </label>
+          <label class="form-field">Route / label (exact)
+            <input id="clear-label" maxlength="600" placeholder="e.g. GET /users/:id">
+          </label>
+        </div>
+        <div class="form-row">
+          <label class="form-field">From<input type="datetime-local" id="clear-since"></label>
+          <label class="form-field">To<input type="datetime-local" id="clear-until"></label>
+          <label class="form-field">Status code (raw events only)<input type="number" id="clear-status" min="100" max="599" placeholder="e.g. 500"></label>
+        </div>
+        <div class="form-row">
+          <button type="button" class="btn primary" id="clear-preview">Preview</button>
+          <button type="button" class="btn danger" id="clear-run" disabled>Delete</button>
+          <span class="form-msg" id="clear-msg"></span>
+        </div>
+      </div>
+    </section>
+
     <section id="page-detail" class="page">
       <nav class="detail-breadcrumb">
         <a class="detail-back" id="detail-back" href="#">
@@ -770,6 +840,32 @@ export function renderDashboardHtml(activeCategories: string[] = ['http', 'excep
       </nav>
       <h1 id="detail-title"></h1>
       <div class="stat-cards" id="detail-stats"></div>
+      <div class="detail-card" id="detail-issue" style="display:none; margin-bottom: 16px">
+        <div class="dc-head"><span class="dc-title">Issue</span></div>
+        <div class="form-row">
+          <label class="form-field">Status
+            <select id="issue-status"><option value="open">Open</option><option value="resolved">Resolved</option><option value="ignored">Ignored</option></select>
+          </label>
+          <label class="form-field">Priority
+            <select id="issue-priority"><option value="">None</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="critical">Critical</option></select>
+          </label>
+          <label class="form-field">Assignee
+            <input id="issue-assignee" maxlength="100" placeholder="Unassigned">
+          </label>
+          <button type="button" class="btn primary" id="issue-save">Save</button>
+          <span class="form-msg" id="issue-msg"></span>
+        </div>
+        <div id="issue-comments"></div>
+        <div class="form-row" style="margin-top: 10px">
+          <label class="form-field" id="issue-author-field">Your name
+            <input id="issue-author" maxlength="100" placeholder="Name">
+          </label>
+          <label class="form-field">Comment
+            <textarea id="issue-comment" maxlength="5000" placeholder="Add a comment"></textarea>
+          </label>
+          <button type="button" class="btn" id="issue-comment-add">Comment</button>
+        </div>
+      </div>
       <div class="detail-cards">
         <div class="detail-card">
           <div class="dc-head"><span class="dc-title">Volume</span></div>
@@ -882,7 +978,8 @@ let range = '1h';
 let lastLoadTs = 0;
 const RANGE_LABEL = { '1h': 'past hour', '6h': 'past 6 hours', '24h': 'past 24 hours', '7d': 'past 7 days', '30d': 'past 30 days' };
 // Named "data", not "cache" — the Cache *category* already needs that word for its own key.
-let data = { http: [], queries: [], exceptions: [], jobs: [], cache: [], runtime: [], health: { ok: true } };
+// issues: null when the storage driver has no issue support (api/issues answers 501).
+let data = { http: [], queries: [], exceptions: [], jobs: [], cache: [], runtime: [], health: { ok: true }, issues: null };
 // null = no active search, use the unfiltered cache above for the table too.
 // Non-null = rows already filtered server-side for the current search term.
 let tableRows = { requests: null, queries: null, exceptions: null, jobs: null, cache: null };
@@ -893,8 +990,8 @@ let sortState = { requests: null, queries: null, exceptions: null, jobs: null, c
 // Discovered from the DOM rather than hardcoded — the server only renders
 // markup for categories with a registered plugin (see WolterModule.forRoot's
 // activeCategories), so this naturally reflects whatever's actually provisioned.
-const PAGES = ['dashboard', 'requests', 'queries', 'exceptions', 'jobs', 'cache', 'detail', 'occurrence'].filter(id => document.getElementById('page-' + id));
-const PAGE_TITLES = { dashboard: 'Dashboard', requests: 'Requests', queries: 'Queries', exceptions: 'Exceptions', jobs: 'Jobs', cache: 'Cache', detail: '', occurrence: '' };
+const PAGES = ['dashboard', 'requests', 'queries', 'exceptions', 'jobs', 'cache', 'data', 'detail', 'occurrence'].filter(id => document.getElementById('page-' + id));
+const PAGE_TITLES = { dashboard: 'Dashboard', requests: 'Requests', queries: 'Queries', exceptions: 'Exceptions', jobs: 'Jobs', cache: 'Cache', data: 'Data', detail: '', occurrence: '' };
 // Where "Back" on the detail page returns to — set right before navigating there.
 let detailReturnPage = 'dashboard';
 // Which item the detail page is currently showing — lets the Duration
@@ -1438,10 +1535,14 @@ function renderExceptionsPage() {
   // an ok/slow/error split per window; exceptions just never populate 'slow'.
   renderStackedBars(document.getElementById('exc-chart'), queryStatusSeries(rows, range, undefined, bucketMsForRange(range)), ['ok', 'error'], [cssVar('--text-muted'), cssVar('--critical')]);
 
-  const summary = summarize(tableRows.exceptions !== null ? tableRows.exceptions : rows);
+  const allGroups = summarize(tableRows.exceptions !== null ? tableRows.exceptions : rows);
+  const tracking = !!data.issues;
+  document.getElementById('exc-status-filter').style.display = tracking ? '' : 'none';
+  const summary = tracking && excStatusFilter !== 'all' ? allGroups.filter(r => issueStatus(r.label) === excStatusFilter) : allGroups;
   document.getElementById('exc-count').textContent = summary.length + ' exception types';
   document.getElementById('exceptions-table').innerHTML = table(summary, [
     { label: 'Type', flex: true, fmt: r => r.label, sort: r => r.label },
+    ...(tracking ? [{ label: 'Status', fmt: r => issueStatus(r.label), sort: r => issueStatus(r.label), cellCls: r => 'issue-st-' + issueStatus(r.label) }] : []),
     { label: 'Count', num: true, fmt: r => r.count, sort: r => r.count },
     { label: 'First seen', num: true, fmt: r => relativeTime(r.firstSeen), sort: r => r.firstSeen },
     { label: 'Last seen', num: true, fmt: r => relativeTime(r.lastSeen), sort: r => r.lastSeen },
@@ -1449,6 +1550,146 @@ function renderExceptionsPage() {
   wireSort('exceptions-table', 'exceptions');
   renderPagination('exc-pagination', 'exceptions', pageCount(summary));
 }
+
+// ---- Issues ---------------------------------------------------------------
+// A group with no issue row yet (its first flush hasn't run) counts as open.
+let excStatusFilter = 'open';
+function issueFor(label) { return (data.issues || []).find(i => i.fingerprint === label); }
+function issueStatus(label) { const i = issueFor(label); return i ? i.status : 'open'; }
+document.querySelectorAll('#exc-status-filter button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    excStatusFilter = btn.dataset.status;
+    document.querySelectorAll('#exc-status-filter button').forEach(b => b.classList.toggle('active', b === btn));
+    pageState.exceptions = 0;
+    renderExceptionsPage();
+  });
+});
+
+// Every write sends x-wolter-request: 1 — the server refuses writes without
+// it, which is what stops another site from posting here with the viewer's
+// cookies (see write-request.ts).
+function postJson(path, body) {
+  return fetch(API + path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-wolter-request': '1' },
+    body: JSON.stringify(body),
+  }).then(async r => {
+    const json = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(json.message || ('Request failed (' + r.status + ')'));
+    return json;
+  });
+}
+
+let currentIssueId = null;
+function renderIssuePanel(label) {
+  const card = document.getElementById('detail-issue');
+  const issue = issueFor(label);
+  currentIssueId = issue ? issue.id : null;
+  if (!data.issues || !issue) { card.style.display = 'none'; return; }
+  card.style.display = '';
+  document.getElementById('issue-status').value = issue.status;
+  document.getElementById('issue-priority').value = issue.priority || '';
+  document.getElementById('issue-assignee').value = issue.assignee || '';
+  document.getElementById('issue-msg').textContent = '';
+  document.getElementById('issue-comments').innerHTML = '<div class="empty">Loading…</div>';
+  fetch(API + '/api/issues/' + issue.id).then(r => r.json()).then(full => {
+    if (currentIssueId !== issue.id) return; // navigated away meanwhile
+    // Guard-identified viewers comment under their own name; otherwise ask.
+    document.getElementById('issue-author-field').style.display = full.viewer ? 'none' : '';
+    renderIssueComments(full.comments || []);
+  }).catch(() => { document.getElementById('issue-comments').innerHTML = ''; });
+}
+
+function renderIssueComments(comments) {
+  document.getElementById('issue-comments').innerHTML = comments.length
+    ? comments.map(c => '<div class="comment"><div class="comment-meta">' + escapeHtml(c.author) + ' · ' + escapeHtml(relativeTime(c.createdAt)) +
+        '</div><div class="comment-body">' + escapeHtml(c.body) + '</div></div>').join('')
+    : '<div class="form-msg">No comments yet.</div>';
+}
+
+function replaceIssue(updated) {
+  data.issues = (data.issues || []).map(i => (i.id === updated.id ? updated : i));
+}
+
+document.getElementById('issue-save').addEventListener('click', () => {
+  if (!currentIssueId) return;
+  const msg = document.getElementById('issue-msg');
+  const priority = document.getElementById('issue-priority').value;
+  postJson('/api/issues/' + currentIssueId, {
+    status: document.getElementById('issue-status').value,
+    priority: priority || null,
+    assignee: document.getElementById('issue-assignee').value,
+  }).then(updated => {
+    replaceIssue(updated);
+    msg.className = 'form-msg';
+    msg.textContent = 'Saved';
+    renderExceptionsPage();
+  }).catch(err => { msg.className = 'form-msg bad'; msg.textContent = err.message; });
+});
+
+document.getElementById('issue-comment-add').addEventListener('click', () => {
+  if (!currentIssueId) return;
+  const box = document.getElementById('issue-comment');
+  const msg = document.getElementById('issue-msg');
+  if (!box.value.trim()) return;
+  const issueId = currentIssueId;
+  postJson('/api/issues/' + issueId + '/comments', { body: box.value, author: document.getElementById('issue-author').value })
+    .then(() => fetch(API + '/api/issues/' + issueId).then(r => r.json()))
+    .then(full => { box.value = ''; if (currentIssueId === issueId) renderIssueComments(full.comments || []); })
+    .catch(err => { msg.className = 'form-msg bad'; msg.textContent = err.message; });
+});
+
+// ---- Data page: preview, then delete exactly what was previewed -------------
+let previewedFilter = null;
+function clearFilterFromForm() {
+  const tables = [];
+  if (document.getElementById('clear-metrics').checked) tables.push('metrics');
+  if (document.getElementById('clear-events').checked) tables.push('events');
+  const filter = { tables };
+  const category = document.getElementById('clear-category').value;
+  if (category) filter.category = category;
+  const label = document.getElementById('clear-label').value.trim();
+  if (label) filter.label = label;
+  const since = document.getElementById('clear-since').value;
+  const until = document.getElementById('clear-until').value;
+  if (since) filter.since = new Date(since).getTime();
+  if (until) filter.until = new Date(until).getTime();
+  const status = document.getElementById('clear-status').value;
+  if (status) filter.statusCode = Number(status);
+  return filter;
+}
+function clearCountsText(r) {
+  return r.metrics + ' metric ' + (r.metrics === 1 ? 'row' : 'rows') + ' and ' + r.events + ' raw ' + (r.events === 1 ? 'event' : 'events');
+}
+// Any edit invalidates the preview — Delete only ever runs a filter the viewer just saw counts for.
+['clear-metrics', 'clear-events', 'clear-category', 'clear-label', 'clear-since', 'clear-until', 'clear-status'].forEach(id => {
+  document.getElementById(id).addEventListener('input', () => {
+    previewedFilter = null;
+    document.getElementById('clear-run').disabled = true;
+  });
+});
+document.getElementById('clear-preview').addEventListener('click', () => {
+  const msg = document.getElementById('clear-msg');
+  const filter = clearFilterFromForm();
+  postJson('/api/data/preview', filter).then(r => {
+    previewedFilter = filter;
+    msg.className = 'form-msg';
+    msg.textContent = 'Matches ' + clearCountsText(r) + '.';
+    document.getElementById('clear-run').disabled = r.metrics + r.events === 0;
+  }).catch(err => { previewedFilter = null; msg.className = 'form-msg bad'; msg.textContent = err.message; });
+});
+document.getElementById('clear-run').addEventListener('click', () => {
+  if (!previewedFilter) return;
+  const msg = document.getElementById('clear-msg');
+  if (!confirm('Delete the previewed data? This cannot be undone.')) return;
+  postJson('/api/data/clear', previewedFilter).then(r => {
+    previewedFilter = null;
+    document.getElementById('clear-run').disabled = true;
+    msg.className = 'form-msg';
+    msg.textContent = 'Deleted ' + clearCountsText(r) + '.';
+    load();
+  }).catch(err => { msg.className = 'form-msg bad'; msg.textContent = err.message; });
+});
 
 function renderJobsPage() {
   if (!document.getElementById('page-jobs')) return; // no job plugin (e.g. BullMQ) provisioned
@@ -1469,8 +1710,11 @@ function renderJobsPage() {
     { label: 'Queue', flex: true, fmt: r => r.label, sort: r => r.label },
     { label: 'Count', num: true, fmt: r => r.count, sort: r => r.count },
     { label: 'Completed', num: true, fmt: r => r.count - r.slowCount - r.errorCount, sort: r => r.count - r.slowCount - r.errorCount },
-    { label: 'Stalled', num: true, fmt: r => r.slowCount, sort: r => r.slowCount, cellCls: r => nonZeroClass(r.slowCount, 'warn') },
+    { label: 'Slow', num: true, fmt: r => r.slowCount, sort: r => r.slowCount, cellCls: r => nonZeroClass(r.slowCount, 'warn') },
     { label: 'Failed', num: true, fmt: r => r.errorCount, sort: r => r.errorCount, cellCls: r => nonZeroClass(r.errorCount, 'critical') },
+    // Durations come from BullMQPlugin's per-job lookup; '—' when none were captured.
+    { label: 'Avg', num: true, fmt: r => r.max ? ms(r.totalDuration / r.count) : '—', sort: r => r.totalDuration / r.count },
+    { label: 'P95', num: true, fmt: r => r.max ? ms(r.p95) : '—', sort: r => r.p95 },
   ], pageState.jobs, sortState.jobs, emptyTableMessage('jobs', 'No jobs processed yet.', 'No queues match your search.'));
   wireSort('jobs-table', 'jobs');
   renderPagination('jobs-pagination', 'jobs', pageCount(summary));
@@ -1629,6 +1873,8 @@ function openItemDetail(tableId, label) {
   // breadcrumb right below ("← Requests") already says exactly that, and the
   // eyebrow + h1 below it name the specific item. Setting it to PAGE_TITLES
   // here would put "Requests" in the masthead AND the breadcrumb, stacked.
+  if (tableId === 'exceptions-table') renderIssuePanel(label);
+  else document.getElementById('detail-issue').style.display = 'none';
   showPage('detail');
   history.replaceState(null, '', '#detail/' + tableId + '/' + encodeURIComponent(label));
 
@@ -1856,7 +2102,7 @@ async function load() {
   if (dataLoaded) document.querySelector('.content').classList.add('is-refreshing');
   try {
     const metricsUrl = (category) => API + '/api/metrics?category=' + category + '&range=' + range;
-    const [http, queries, exceptions, jobs, cacheRows, runtime, health] = await Promise.all([
+    const [http, queries, exceptions, jobs, cacheRows, runtime, health, issues] = await Promise.all([
       fetch(metricsUrl('http'), opts).then(r => r.json()),
       fetch(metricsUrl('query'), opts).then(r => r.json()),
       fetch(metricsUrl('exception'), opts).then(r => r.json()),
@@ -1864,8 +2110,9 @@ async function load() {
       fetch(metricsUrl('cache'), opts).then(r => r.json()),
       fetch(metricsUrl('runtime'), opts).then(r => r.json()),
       fetch(API + '/api/health', opts).then(r => r.json()),
+      fetch(API + '/api/issues', opts).then(r => (r.ok ? r.json() : null)),
     ]);
-    data = { http, queries, exceptions, jobs, cache: cacheRows, runtime, health };
+    data = { http, queries, exceptions, jobs, cache: cacheRows, runtime, health, issues };
     renderDashboardPage();
     renderRequestsPage();
     renderQueriesPage();
@@ -1891,6 +2138,13 @@ async function load() {
     // this inner string literal needs to see.
     document.getElementById('health').dataset.tooltip = ['Storage: ' + (health.ok ? 'ok' : 'down'), ...retentionLines].join('\\n');
     document.getElementById('prod-sqlite-warning').style.display = health.sqliteInProduction ? '' : 'none';
+    // Label cap hit within the last hour — some groups were folded into '(other)'.
+    const overflowing = (health.labelOverflow || []).filter(o => Date.now() - o.lastAt < 3_600_000);
+    document.getElementById('label-overflow-warning').style.display = overflowing.length ? '' : 'none';
+    document.getElementById('label-overflow-text').textContent = overflowing.length
+      ? 'Too many distinct labels in: ' + overflowing.map(o => o.category + ' (' + o.folded + ' events grouped as "(other)", last ' + relativeTime(o.lastAt) + ')').join(', ') +
+        '. A plugin may be labelling events with request data, or the app is receiving unusual traffic.'
+      : '';
     // Hidden with no plugins configured (core watchers only) — a dot for
     // zero plugins would just be clutter, not a signal.
     const plugins = health.plugins || [];
