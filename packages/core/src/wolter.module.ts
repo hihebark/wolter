@@ -95,9 +95,20 @@ export class WolterModule implements NestModule {
     const dashboardEnabled = options.dashboard?.enabled ?? true;
     const dashboardPath = (options.dashboard?.path ?? '/wolter').replace(/^\//, '');
 
-    if (process.env.NODE_ENV === 'production' && dashboardEnabled && !options.dashboard?.guard) {
+    // Fail closed: the dashboard serves everything captured from other
+    // clients' requests (raw URLs, headers, bodies, stacks, SQL params), so
+    // an unguarded one is only allowed where the host has explicitly said so
+    // — an opt-in flag, or an explicitly declared development/test
+    // environment. Gating on NODE_ENV === 'production' instead left it open
+    // whenever NODE_ENV was unset or spelled differently, which NestJS itself
+    // never prevents.
+    const nodeEnv = process.env.NODE_ENV;
+    const devLike = nodeEnv === 'development' || nodeEnv === 'test';
+    if (dashboardEnabled && !options.dashboard?.guard && !options.dashboard?.allowUnauthenticated && !devLike) {
       throw new Error(
-        '[Wolter] Dashboard guard is required in production. Set dashboard.guard in WolterModule.forRoot(), or set dashboard.enabled = false.',
+        `[Wolter] Dashboard guard is required (NODE_ENV is ${nodeEnv === undefined ? 'unset' : `'${nodeEnv}'`}). ` +
+          'Set dashboard.guard in WolterModule.forRoot(), set dashboard.enabled = false, or set ' +
+          'dashboard.allowUnauthenticated = true to serve it without auth on purpose.',
       );
     }
 
@@ -111,7 +122,7 @@ export class WolterModule implements NestModule {
       },
       {
         provide: Aggregator,
-        useFactory: (storage: WolterStorageDriver) => new Aggregator(storage, options.retention),
+        useFactory: (storage: WolterStorageDriver) => new Aggregator(storage, options.retention, options.metrics?.maxRowsPerCategory ?? 100_000),
         inject: [WOLTER_STORAGE],
       },
       {
@@ -134,9 +145,10 @@ export class WolterModule implements NestModule {
         useFactory: (recorder: Recorder) =>
           new WolterHttpInterceptor(
             recorder,
-            options.slowQueryThreshold ?? 500,
+            options.thresholds?.default ?? 500,
             dashboardEnabled ? `/${dashboardPath}` : undefined,
             options.capture,
+            options.thresholds?.routes,
           ),
         inject: [WOLTER_RECORDER],
       },
