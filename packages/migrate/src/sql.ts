@@ -1,4 +1,4 @@
-import { ColumnType, TableDef, WOLTER_TABLES, indexName, tableName, validatePrefix } from './schema';
+import { ColumnDef, ColumnType, TableDef, WOLTER_TABLES, indexName, tableName, uniqueName, validatePrefix } from './schema';
 
 export type SqlDialect = 'postgres' | 'mysql' | 'sqlite';
 
@@ -18,14 +18,22 @@ function autoIncrementColumnSql(dialect: SqlDialect): string {
   return `${quote(dialect, 'id')} INTEGER PRIMARY KEY AUTOINCREMENT`;
 }
 
+function columnTypeSql(dialect: SqlDialect, col: ColumnDef): string {
+  if (dialect === 'mysql' && col.type === 'text' && col.maxLength) return `VARCHAR(${col.maxLength})`;
+  return TYPE_MAP[dialect][col.type];
+}
+
 export function createTableSql(table: TableDef, prefix: string, dialect: SqlDialect): string {
   const lines: string[] = [];
   if (table.autoIncrementId) lines.push(autoIncrementColumnSql(dialect));
   for (const col of table.columns) {
-    lines.push(`${quote(dialect, col.name)} ${TYPE_MAP[dialect][col.type]}${col.nullable ? '' : ' NOT NULL'}`);
+    lines.push(`${quote(dialect, col.name)} ${columnTypeSql(dialect, col)}${col.nullable ? '' : ' NOT NULL'}`);
   }
   if (table.primaryKey) {
     lines.push(`PRIMARY KEY (${table.primaryKey.map((c) => quote(dialect, c)).join(', ')})`);
+  }
+  if (table.unique) {
+    lines.push(`CONSTRAINT ${quote(dialect, uniqueName(table, prefix))} UNIQUE (${table.unique.map((c) => quote(dialect, c)).join(', ')})`);
   }
   return `CREATE TABLE IF NOT EXISTS ${quote(dialect, tableName(table, prefix))} (\n  ${lines.join(',\n  ')}\n)`;
 }
@@ -60,5 +68,5 @@ export function renderSchemaSql(prefix: string, dialect: SqlDialect): string[] {
 
 export function renderDropSchemaSql(prefix: string, dialect: SqlDialect): string[] {
   validatePrefix(prefix);
-  return WOLTER_TABLES.map((t) => `DROP TABLE IF EXISTS ${quote(dialect, tableName(t, prefix))};`);
+  return [...WOLTER_TABLES].reverse().map((t) => `DROP TABLE IF EXISTS ${quote(dialect, tableName(t, prefix))};`);
 }

@@ -37,7 +37,9 @@ for (const dialect of ['postgres', 'mysql', 'sqlite'] as const) {
     // `queryRunner.query(\`CREATE TABLE ... (\`);` — with every column on its
     // own, separately (and invalidly) queried line. A whole statement instead
     // carries the table's last real column through to the closing ');'.
-    const opensAt = source.indexOf('CREATE TABLE IF NOT EXISTS');
+    // Anchored on the metrics table specifically — it's no longer the first
+    // CREATE TABLE (the routes/labels lookup tables come first).
+    const opensAt = source.search(/CREATE TABLE IF NOT EXISTS \\?.wolter_metrics/);
     const closesAt = source.indexOf(');`);', opensAt);
     assert.notEqual(closesAt, -1, 'expected a `);\\`);` statement terminator after the CREATE TABLE call');
     const statementBody = source.slice(opensAt, closesAt);
