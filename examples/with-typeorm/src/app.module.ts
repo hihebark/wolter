@@ -12,7 +12,10 @@ const typeormPlugin = new TypeORMPlugin({ captureParameters: true });
   imports: [
     WolterModule.forRoot({
       storage: { driver: 'sqlite', path: './wolter.db' },
-      dashboard: { path: '/wolter' },
+      // Local demo only: no guard, so the dashboard (and every captured
+      // header/body/SQL parameter) is readable by anyone who can reach the
+      // port. A real deployment sets dashboard.guard instead.
+      dashboard: { path: '/wolter', allowUnauthenticated: true },
       capture: { headers: true, body: true, ignoreHeaders: ['x-request-id'], ignoreBodyFields: ['password'] },
       plugins: [typeormPlugin, new NodePlugin({ interval: 3_000 })],
     }),
